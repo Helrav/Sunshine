@@ -328,22 +328,23 @@ namespace nvhttp {
    * @brief Check whether a certificate exactly matches an enabled paired-client record.
    *
    * @param certificate Parsed client certificate to compare by canonical X.509 identity.
-   * @return `true` only when exactly one matching paired-client record is enabled.
+   * @return `true` when at least one matching paired-client record is enabled.
    * @note The caller must hold `client_auth_mutex()`.
    */
   bool is_client_enabled(const X509 *certificate) {
-    bool matched = false;
     for (const auto &named_cert : client_root.named_devices) {
       if (auto stored_certificate = crypto::x509(named_cert.cert); !stored_certificate || X509_cmp(stored_certificate.get(), certificate) != 0) {
         continue;
       }
 
-      if (matched || !named_cert.enabled) {
-        return false;
+      // A certificate may legitimately appear more than once after repeated pairing
+      // attempts. Treat it as authorized when any record for it is enabled instead of
+      // rejecting the client outright, which would lock it out of its own account.
+      if (named_cert.enabled) {
+        return true;
       }
-      matched = true;
     }
-    return matched;
+    return false;
   }
 
   /**
@@ -444,12 +445,31 @@ namespace nvhttp {
       return {};
     }
 
+    std::lock_guard lock {client_auth_mutex()};
+
+    // Re-pairing an already known client must refresh its existing record instead of
+    // appending a second copy of the same certificate. Duplicate records make the
+    // client identity ambiguous and can lock the device out of its own pairing.
+    for (auto &named_cert : client_root.named_devices) {
+      if (named_cert.cert != canonical_certificate) {
+        continue;
+      }
+
+      named_cert.name = name;
+      named_cert.enabled = true;
+      rebuild_client_cert_chain();
+
+      if (!config::sunshine.flags[config::flag::FRESH_STATE]) {
+        save_state();
+      }
+      return named_cert.uuid;
+    }
+
     named_cert_t named_cert;
     named_cert.name = name;
     named_cert.cert = std::move(canonical_certificate);
     named_cert.uuid = uuid_util::uuid_t::generate().string();
 
-    std::lock_guard lock {client_auth_mutex()};
     client_root.named_devices.emplace_back(std::move(named_cert));
     rebuild_client_cert_chain();
 
