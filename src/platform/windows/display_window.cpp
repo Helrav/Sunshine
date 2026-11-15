@@ -246,7 +246,7 @@ namespace platf::window_capture {
     RECT rect {};
     GetWindowRect(search.best, &rect);
     BOOST_LOG(info) << "Window capture: selected ["sv << utf_utils::to_utf8(window_title(search.best))
-                    << "] ("sv << (rect.right - rect.left) << 'x' << (rect.bottom - rect.top) << ')'sv;
+                    << "] ("sv << (rect.right - rect.left) << 'x' << (rect.bottom - rect.top) << ')';
     return search.best;
   }
 }  // namespace platf::window_capture
