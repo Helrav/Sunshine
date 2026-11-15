@@ -21,14 +21,17 @@ namespace platf::window_capture {
    * {
    *   "enabled": true,
    *   "process": "P5R.exe",
-   *   "title": ""
+   *   "title": "",
+   *   "wait_seconds": 20
    * }
    * @endcode
    *
    * `process` is matched against the executable name of the window's owner (case-insensitive).
-   * `title` is matched as a case-insensitive substring when `process` is empty. If both are
-   * empty, the file is missing, `enabled` is false, or nothing matches, this returns nullptr
-   * and capture continues on the display as before.
+   * `title` is matched as a case-insensitive substring when `process` is empty. `wait_seconds`
+   * (default 20, capped at 120) is how long Sunshine waits for the window to appear before
+   * giving up, which covers applications launched by the same stream request. If both `process`
+   * and `title` are empty, the file is missing, `enabled` is false, or nothing matches, this
+   * returns nullptr and capture continues on the display as before.
    *
    * @return Window handle to capture, or nullptr to use display capture.
    */

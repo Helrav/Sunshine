@@ -8,15 +8,18 @@
  */
 
 // standard includes
+#include <chrono>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <optional>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 // platform includes
+#include <TlHelp32.h>
 #include <Windows.h>
 
 // local includes
@@ -40,6 +43,7 @@ namespace platf::window_capture {
     struct target_t {
       std::string process;  ///< Executable name to match, e.g. `P5R.exe`.
       std::string title;  ///< Window title substring, used when `process` is empty.
+      int wait_ms {20000};  ///< How long to wait for the window to appear.
     };
 
     /**
@@ -115,6 +119,38 @@ namespace platf::window_capture {
 
       const std::filesystem::path path {std::wstring {buffer.data(), size}};
       return lower_ascii(utf_utils::to_utf8(path.filename().wstring()));
+    }
+
+    /**
+     * @brief Check whether a process with the given lowercase executable name is running.
+     *
+     * Used to avoid waiting for a window that can never appear because the application was
+     * never started (for example when a different Moonlight entry is launched).
+     *
+     * @param name Lowercase executable name, e.g. `p5r.exe`.
+     * @return True when such a process exists, false otherwise. Fails open on snapshot errors.
+     */
+    bool process_running(const std::string &name) {
+      HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+      if (snapshot == INVALID_HANDLE_VALUE) {
+        return true;
+      }
+
+      PROCESSENTRY32W entry {};
+      entry.dwSize = static_cast<DWORD>(sizeof(entry));
+
+      bool found = false;
+      if (Process32FirstW(snapshot, &entry)) {
+        do {
+          if (lower_ascii(utf_utils::to_utf8(entry.szExeFile)) == name) {
+            found = true;
+            break;
+          }
+        } while (Process32NextW(snapshot, &entry));
+      }
+
+      CloseHandle(snapshot);
+      return found;
     }
 
     /**
@@ -217,6 +253,13 @@ namespace platf::window_capture {
           return std::nullopt;
         }
 
+        const int wait_seconds = json.value("wait_seconds", 20);
+        if (wait_seconds > 0) {
+          target.wait_ms = wait_seconds > 120 ? 120000 : wait_seconds * 1000;
+        } else {
+          target.wait_ms = 0;
+        }
+
         return target;
       } catch (const std::exception &e) {
         BOOST_LOG(warning) << "Window capture: invalid window_capture.json: "sv << e.what();
@@ -235,18 +278,45 @@ namespace platf::window_capture {
     search.process = lower_ascii(target->process);
     search.title = lower_ascii(target->title);
 
-    EnumWindows(enum_windows, reinterpret_cast<LPARAM>(&search));
+    const auto started = std::chrono::steady_clock::now();
+    const auto deadline = started + std::chrono::milliseconds(target->wait_ms);
+    // Give a just-launched application a moment to appear before assuming it will never start.
+    const auto process_grace = started + std::chrono::seconds(2);
+    bool logged_wait {false};
 
-    if (search.best == nullptr) {
-      BOOST_LOG(warning) << "Window capture: no window matched process ["sv << target->process
-                         << "] title ["sv << target->title << "], falling back to display capture"sv;
-      return nullptr;
+    while (true) {
+      search.best = nullptr;
+      search.best_area = 0;
+      EnumWindows(enum_windows, reinterpret_cast<LPARAM>(&search));
+
+      if (search.best != nullptr) {
+        RECT rect {};
+        GetWindowRect(search.best, &rect);
+        BOOST_LOG(info) << "Window capture: selected ["sv << utf_utils::to_utf8(window_title(search.best))
+                        << "] ("sv << (rect.right - rect.left) << 'x' << (rect.bottom - rect.top) << ')';
+        return search.best;
+      }
+
+      const auto now = std::chrono::steady_clock::now();
+      if (now >= deadline) {
+        break;
+      }
+      if (!search.process.empty() && now > process_grace && !process_running(search.process)) {
+        break;
+      }
+
+      if (!logged_wait) {
+        BOOST_LOG(info) << "Window capture: waiting up to "sv << (target->wait_ms / 1000)
+                        << "s for a window matching process ["sv << target->process
+                        << "] title ["sv << target->title << ']';
+        logged_wait = true;
+      }
+
+      std::this_thread::sleep_for(std::chrono::milliseconds(250));
     }
 
-    RECT rect {};
-    GetWindowRect(search.best, &rect);
-    BOOST_LOG(info) << "Window capture: selected ["sv << utf_utils::to_utf8(window_title(search.best))
-                    << "] ("sv << (rect.right - rect.left) << 'x' << (rect.bottom - rect.top) << ')';
-    return search.best;
+    BOOST_LOG(warning) << "Window capture: no window matched process ["sv << target->process
+                       << "] title ["sv << target->title << "], falling back to display capture"sv;
+    return nullptr;
   }
 }  // namespace platf::window_capture
