@@ -19,8 +19,8 @@
 #include <vector>
 
 // platform includes
-#include <TlHelp32.h>
 #include <Windows.h>
+#include <TlHelp32.h>
 
 // local includes
 #include "display_window.h"
